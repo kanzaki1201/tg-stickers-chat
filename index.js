@@ -6,7 +6,7 @@ const Database = require('better-sqlite3');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 module.exports = function registerTelegramStickersBrain(api) {
-  if (api.registrationMode !== 'full') return;
+  if (api.registrationMode === 'cli-metadata' || api.registrationMode === 'setup-only') return;
 
   const PLUGIN_ID = 'tg-stickers-chat';
   const STATE_DIR = api.runtime.state.resolveStateDir();
