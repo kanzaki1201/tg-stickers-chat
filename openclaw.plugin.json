@@ -3,6 +3,14 @@
   "name": "TG Stickers Chat",
   "description": "Intent-driven Telegram sticker chat enhancement for OpenClaw using Gemini Embedding 2 and local SQLite/in-memory retrieval",
   "version": "1.0.3",
+  "contracts": {
+    "tools": [
+      "sync_sticker_set_by_name",
+      "get_sticker_stats",
+      "select_sticker_for_reply",
+      "search_sticker_by_emotion"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
