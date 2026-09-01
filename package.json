@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
-    "better-sqlite3": "^12.6.2"
+    "better-sqlite3": "^12.11.1"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -47,5 +47,8 @@
     "docs/OPENCLAW_AUTO_INSTALL.md",
     "LICENSE",
     "package.json"
-  ]
+  ],
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true
+  }
 }
