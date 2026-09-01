@@ -6,6 +6,8 @@ const Database = require('better-sqlite3');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 module.exports = function registerTelegramStickersBrain(api) {
+  if (api.registrationMode !== 'full') return;
+
   const PLUGIN_ID = 'tg-stickers-chat';
   const STATE_DIR = api.runtime.state.resolveStateDir();
   const INDEX_DB_PATH = path.join(STATE_DIR, `${PLUGIN_ID}.sqlite`);
@@ -383,6 +385,7 @@ module.exports = function registerTelegramStickersBrain(api) {
           file_id TEXT NOT NULL,
           emoji TEXT,
           set_name TEXT,
+          description TEXT,
           embedding_json TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -413,6 +416,11 @@ module.exports = function registerTelegramStickersBrain(api) {
         CREATE INDEX IF NOT EXISTS idx_selection_history_file_unique_id ON selection_history(file_unique_id);
         CREATE INDEX IF NOT EXISTS idx_selection_history_set_name ON selection_history(set_name);
       `);
+
+      const columns = indexDb.prepare('PRAGMA table_info(stickers_index)').all().map((c) => c.name);
+      if (!columns.includes('description')) {
+        indexDb.exec('ALTER TABLE stickers_index ADD COLUMN description TEXT');
+      }
     }
     return indexDb;
   }
@@ -445,7 +453,7 @@ module.exports = function registerTelegramStickersBrain(api) {
     }
 
     const rows = ensureIndexDb().prepare(`
-      SELECT file_unique_id, file_id, emoji, set_name, embedding_json
+      SELECT file_unique_id, file_id, emoji, set_name, description, embedding_json
       FROM stickers_index
     `).all();
 
@@ -459,6 +467,7 @@ module.exports = function registerTelegramStickersBrain(api) {
           fileId: row.file_id,
           emoji: row.emoji || '',
           setName: row.set_name || '',
+          description: row.description || '',
           embedding: JSON.parse(row.embedding_json),
         };
         searchCache.push(item);
@@ -496,14 +505,15 @@ module.exports = function registerTelegramStickersBrain(api) {
   function upsertIndexedSticker(record) {
     ensureIndexDb().prepare(`
       INSERT INTO stickers_index (
-        file_unique_id, file_id, emoji, set_name, embedding_json, updated_at
+        file_unique_id, file_id, emoji, set_name, description, embedding_json, updated_at
       ) VALUES (
-        @file_unique_id, @file_id, @emoji, @set_name, @embedding_json, @updated_at
+        @file_unique_id, @file_id, @emoji, @set_name, @description, @embedding_json, @updated_at
       )
       ON CONFLICT(file_unique_id) DO UPDATE SET
         file_id = excluded.file_id,
         emoji = excluded.emoji,
         set_name = excluded.set_name,
+        description = excluded.description,
         embedding_json = excluded.embedding_json,
         updated_at = excluded.updated_at
     `).run(record);
@@ -513,6 +523,7 @@ module.exports = function registerTelegramStickersBrain(api) {
       fileId: record.file_id,
       emoji: record.emoji || '',
       setName: record.set_name || '',
+      description: record.description || '',
       embedding: JSON.parse(record.embedding_json),
     };
 
@@ -522,6 +533,7 @@ module.exports = function registerTelegramStickersBrain(api) {
         existing.fileId = cachedItem.fileId;
         existing.emoji = cachedItem.emoji;
         existing.setName = cachedItem.setName;
+        existing.description = cachedItem.description;
         existing.embedding = cachedItem.embedding;
       } else {
         searchCache.push(cachedItem);
@@ -800,10 +812,57 @@ module.exports = function registerTelegramStickersBrain(api) {
     } catch (_) {}
   }
 
+  const ANIMATION_FRAME_COUNT = 4;
+
+  /**
+   * Sample frames spread across a clip. A single frame cannot distinguish a sticker's
+   * opening state from its punchline, which is how "sleepy cat" got indexed as "spit take".
+   */
+  function extractAnimationFrames(inputPath, tempBase) {
+    const probe = cp.spawnSync('ffprobe', [
+      '-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'default=nw=1:nk=1', inputPath,
+    ], { encoding: 'utf8', timeout: 15000 });
+
+    const duration = Number.parseFloat((probe.stdout || '').trim());
+    if (!Number.isFinite(duration) || duration <= 0) return [];
+
+    const frames = [];
+    for (let j = 0; j < ANIMATION_FRAME_COUNT; j += 1) {
+      const at = (duration * (j + 0.5)) / ANIMATION_FRAME_COUNT;
+      const framePath = `${tempBase}-f${j}.png`;
+      const result = cp.spawnSync('ffmpeg', [
+        '-hide_banner', '-loglevel', 'error', '-y',
+        '-ss', at.toFixed(3), '-i', inputPath,
+        '-frames:v', '1', '-update', '1', framePath,
+      ], { encoding: 'utf8', timeout: 20000 });
+
+      if (result.status === 0 && fs.existsSync(framePath)) {
+        frames.push(fs.readFileSync(framePath));
+        safeUnlink(framePath);
+      }
+    }
+    return frames;
+  }
+
+  /**
+   * Telegram file paths often carry no extension, so the declared mime type cannot be
+   * trusted to spot animation. Sniff the container instead.
+   */
+  function isAnimatedBuffer(buffer) {
+    if (!Buffer.isBuffer(buffer) || buffer.length < 12) return false;
+    if (buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) return true;
+    if (buffer.slice(0, 3).toString('latin1') === 'GIF') return true;
+    if (buffer.slice(0, 4).toString('latin1') === 'RIFF' && buffer.slice(8, 12).toString('latin1') === 'WEBP') {
+      return buffer.slice(12, Math.min(buffer.length, 64)).toString('latin1').includes('ANIM');
+    }
+    return false;
+  }
+
   function buildPreviewImage(buffer, filePathValue) {
     const mimeType = guessMimeType(filePathValue);
     if (mimeType === 'image/png' || mimeType === 'image/jpeg') {
-      return { buffer, mimeType, source: 'original' };
+      return { buffer, frames: [buffer], mimeType, source: 'original' };
     }
 
     const tempBase = makeTempBase('preview');
@@ -812,24 +871,29 @@ module.exports = function registerTelegramStickersBrain(api) {
 
     try {
       fs.writeFileSync(inputPath, buffer);
-      const result = cp.spawnSync('ffmpeg', [
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-y',
-        '-i', inputPath,
-        '-frames:v', '1',
-        outputPath,
-      ], { encoding: 'utf8' });
+
+      const isTgs = mimeType === 'application/x-tgsticker' || (filePathValue && filePathValue.endsWith('.tgs'));
+      const result = isTgs
+        ? cp.spawnSync('/home/k/.openclaw/bin/tgs2png', [inputPath, outputPath], { encoding: 'utf8', timeout: 15000 })
+        : cp.spawnSync('ffmpeg', [
+            '-hide_banner', '-loglevel', 'error', '-y',
+            '-i', inputPath, '-frames:v', '1', outputPath,
+          ], { encoding: 'utf8' });
 
       if (result.status === 0 && fs.existsSync(outputPath)) {
+        const firstFrame = fs.readFileSync(outputPath);
+        const isAnimated = !isTgs && isAnimatedBuffer(buffer);
+        const frames = isAnimated ? extractAnimationFrames(inputPath, tempBase) : [];
+
         return {
-          buffer: fs.readFileSync(outputPath),
+          buffer: firstFrame,
+          frames: frames.length > 1 ? frames : [firstFrame],
           mimeType: 'image/png',
-          source: mimeType === 'image/webp' || mimeType === 'image/gif' ? 'ffmpeg-static-convert' : 'ffmpeg',
+          source: isTgs ? 'tgs2png' : (mimeType === 'image/webp' || mimeType === 'image/gif' ? 'ffmpeg-static-convert' : 'ffmpeg'),
         };
       }
 
-      api.logger.warn(`[Stickers] Preview conversion failed for ${filePathValue || 'unknown'}: ${normalizeWhitespace(result.stderr || '') || 'unknown ffmpeg error'}`);
+      api.logger.warn(`[Stickers] Preview conversion failed for ${filePathValue || 'unknown'}: ${normalizeWhitespace(result.stderr || '') || (isTgs ? 'tgs2png error' : 'unknown ffmpeg error')}`);
       return null;
     } catch (e) {
       api.logger.warn(`[Stickers] Preview conversion error for ${filePathValue || 'unknown'}: ${e.message}`);
@@ -897,7 +961,74 @@ module.exports = function registerTelegramStickersBrain(api) {
     return vector;
   }
 
-  async function embedStickerDocument({ imageBuffer, imageMimeType, emoji, setName, fileUniqueId }) {
+  const VISION_MODEL = 'deepseek-v4-flash-vision-exp';
+  const VISION_PROMPT_FILE = '/home/k/.openclaw/sticker-describe-prompt.txt';
+  const VISION_PROMPT_FALLBACK = [
+    'Describe this chat sticker for a semantic search index that picks reply stickers.',
+    'Picture and text carry the meaning together; many stickers have no text.',
+    'Several images mean frames of one animated sticker: describe the whole arc, and do not invent an off-screen cause.',
+    'Output lines TEXT / SCENE / EXPRESSION / MEANING / SEND_WHEN / DONT_SEND_WHEN / LIMITS.',
+    'Write MEANING, SEND_WHEN and DONT_SEND_WHEN in English then 繁體中文 after a slash.',
+  ].join('\n');
+
+  function getVisionPrompt() {
+    try {
+      const text = fs.readFileSync(VISION_PROMPT_FILE, 'utf8').trim();
+      if (text) return text;
+    } catch (_) {}
+    return VISION_PROMPT_FALLBACK;
+  }
+
+  function getOpenAiKey() {
+    return process.env.DEEPSEEK_API_KEY || getPluginConfig().visionApiKey || '';
+  }
+
+  async function describeStickerWithVision(imageBuffers, imageMimeType) {
+    const buffers = (Array.isArray(imageBuffers) ? imageBuffers : [imageBuffers]).filter(Boolean);
+    if (!buffers.length || !imageMimeType || !String(imageMimeType).startsWith('image/')) return null;
+
+    const apiKey = getOpenAiKey();
+    if (!apiKey) {
+      api.logger.warn('[Stickers] Vision describe skipped: DEEPSEEK_API_KEY not set');
+      return null;
+    }
+
+    const content = [{ type: 'text', text: getVisionPrompt() }];
+    for (const buf of buffers) {
+      content.push({
+        type: 'image_url',
+        image_url: { url: `data:image/png;base64,${buf.toString('base64')}` },
+      });
+    }
+
+    try {
+      const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: VISION_MODEL,
+          messages: [{ role: 'user', content }],
+        }),
+        signal: AbortSignal.timeout(180000),
+      });
+
+      if (!res.ok) {
+        api.logger.warn(`[Stickers] Vision describe failed: HTTP ${res.status}`);
+        return null;
+      }
+
+      const data = await res.json();
+      return data?.choices?.[0]?.message?.content?.trim() || null;
+    } catch (err) {
+      api.logger.warn(`[Stickers] Vision describe failed: ${err.message}`);
+      return null;
+    }
+  }
+
+  async function embedStickerDocument({ imageBuffer, imageMimeType, emoji, setName, fileUniqueId, description }) {
     const parts = [];
 
     if (imageBuffer && imageMimeType && String(imageMimeType).startsWith('image/')) {
@@ -914,6 +1045,7 @@ module.exports = function registerTelegramStickersBrain(api) {
       emoji ? `emoji: ${emoji}` : '',
       setName ? `set: ${setName}` : '',
       fileUniqueId ? `id: ${fileUniqueId}` : '',
+      description ? `description: ${description}` : '',
     ].filter(Boolean).join('\n');
 
     if (metadataText) parts.push({ text: metadataText });
@@ -957,12 +1089,12 @@ module.exports = function registerTelegramStickersBrain(api) {
     });
   }
 
-  async function indexSticker({ sticker, setName }) {
+  async function indexSticker({ sticker, setName, force = false }) {
     if (!sticker?.file_id || !sticker?.file_unique_id) {
       throw new Error('Sticker is missing file identifiers');
     }
 
-    if (hasIndexedSticker(sticker.file_unique_id)) {
+    if (!force && hasIndexedSticker(sticker.file_unique_id)) {
       return { skipped: true, reason: 'already-indexed' };
     }
 
@@ -975,12 +1107,18 @@ module.exports = function registerTelegramStickersBrain(api) {
     const originalBuffer = await downloadBuffer(downloadUrl);
     const previewImage = buildPreviewImage(originalBuffer, fileInfo.file_path);
 
+    const description = await describeStickerWithVision(
+      previewImage?.frames || previewImage?.buffer || null,
+      previewImage?.mimeType || '',
+    );
+
     const vector = await embedStickerDocument({
       imageBuffer: previewImage?.buffer || null,
       imageMimeType: previewImage?.mimeType || '',
       emoji: sticker.emoji || '',
       setName: setName || '',
       fileUniqueId: sticker.file_unique_id,
+      description: description || '',
     });
 
     upsertIndexedSticker({
@@ -988,6 +1126,7 @@ module.exports = function registerTelegramStickersBrain(api) {
       file_id: sticker.file_id,
       emoji: sticker.emoji || '',
       set_name: setName || '',
+      description: description || '',
       embedding_json: JSON.stringify(vector),
       updated_at: new Date().toISOString(),
     });
@@ -1515,6 +1654,9 @@ module.exports = function registerTelegramStickersBrain(api) {
   }
 
   function buildToolResultText(result) {
+    const chosenId = result.sticker?.fileUniqueId;
+    const chosen = chosenId ? searchCacheById.get(chosenId) : null;
+
     const payload = {
       should_send: result.shouldSend,
       confidence: Number((result.confidence || 0).toFixed(4)),
@@ -1524,6 +1666,8 @@ module.exports = function registerTelegramStickersBrain(api) {
       matched_intent: result.sticker?.matchedIntentText || result.intentSummary,
       source: result.sticker?.source || undefined,
       score: typeof result.sticker?.score === 'number' ? Number(result.sticker.score.toFixed(4)) : undefined,
+      // The agent cannot see the sticker it is about to send; this is its only look at it.
+      description: chosen?.description || result.sticker?.description || undefined,
     };
 
     if (result.topCandidate?.componentScores) {
@@ -1546,7 +1690,8 @@ module.exports = function registerTelegramStickersBrain(api) {
       '1. 先确定最终文字 `replyText`。',
       '2. 单独调用 `select_sticker_for_reply`。',
       '3. 等结果返回。',
-      '4. 如果 `should_send=true` 且有 `sticker_id`：调用 `message(action="sticker", stickerId=[sticker_id])` 发送贴纸。注意：`stickerId` 必须是数组。',
+      '4. 先读 `description`——你看不见贴图本身，这段文字是你唯一能看到的画面内容。对照 `MEANING` / `SEND_WHEN` / `DONT_SEND_WHEN` / `LIMITS`：跟你想表达的不一致（例如你想撒娇、它却是拒绝或过节专用），就当作 `should_send=false`，只发文字，或换个 `emotion` 重新 `select_sticker_for_reply` 一次。分数高不等于贴切。',
+      '5. 如果 `should_send=true`、有 `sticker_id`、而且 `description` 对得上：调用 `message(action="sticker", stickerId=[sticker_id])` 发送贴纸。注意：`stickerId` 必须是数组。',
       '5. 再发送文字：`message(action="send", message=replyText)`。',
       '6. 最终输出 `NO_REPLY`。',
       '不需要贴纸时：',
