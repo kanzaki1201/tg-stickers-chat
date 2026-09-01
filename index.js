@@ -13,6 +13,7 @@ module.exports = function registerTelegramStickersBrain(api) {
   const INDEX_DB_PATH = path.join(STATE_DIR, `${PLUGIN_ID}.sqlite`);
   const TMP_DIR = path.join(STATE_DIR, `${PLUGIN_ID}-tmp`);
   const CORE_CACHE_FILE = path.join(STATE_DIR, 'telegram', 'sticker-cache.json');
+  const CORE_STATE_DB = path.join(STATE_DIR, 'state', 'openclaw.sqlite');
   const LEGACY_SEARCH_STATE_FILE = path.join(STATE_DIR, `${PLUGIN_ID}-search-state.json`);
 
   const SEARCH_RECALL_LIMIT = 36;
@@ -739,23 +740,26 @@ module.exports = function registerTelegramStickersBrain(api) {
     return false;
   }
 
-  function ensureCoreCache() {
-    const dir = path.dirname(CORE_CACHE_FILE);
-    fs.mkdirSync(dir, { recursive: true });
-    if (!fs.existsSync(CORE_CACHE_FILE)) {
-      fs.writeFileSync(CORE_CACHE_FILE, JSON.stringify({ stickers: {} }, null, 2));
-    }
-  }
-
   function readCoreCache() {
-    ensureCoreCache();
     try {
-      const parsed = JSON.parse(fs.readFileSync(CORE_CACHE_FILE, 'utf8'));
-      if (!parsed || typeof parsed !== 'object') return { stickers: {} };
-      if (!parsed.stickers || typeof parsed.stickers !== 'object') parsed.stickers = {};
-      return parsed;
+      const db = new Database(CORE_STATE_DB, { readonly: true, fileMustExist: true });
+      try {
+        const rows = db.prepare(
+          "SELECT value_json FROM plugin_state_entries WHERE namespace = 'telegram.sticker-cache'"
+        ).all();
+        const stickers = {};
+        for (const row of rows) {
+          try {
+            const entry = JSON.parse(row.value_json);
+            if (entry && entry.fileUniqueId) stickers[entry.fileUniqueId] = entry;
+          } catch {}
+        }
+        return { stickers };
+      } finally {
+        db.close();
+      }
     } catch (e) {
-      api.logger.warn(`[Stickers] Failed to read core sticker cache: ${e.message}`);
+      api.logger.warn(`[Stickers] Failed to read core sticker cache from SQLite: ${e.message}`);
       return { stickers: {} };
     }
   }
@@ -1002,7 +1006,7 @@ module.exports = function registerTelegramStickersBrain(api) {
     }
 
     try {
-      const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      const res = await fetch('https://api.deepseek.com/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1942,7 +1946,6 @@ module.exports = function registerTelegramStickersBrain(api) {
   });
 
   ensureIndexDb();
-  ensureCoreCache();
   importLegacySelectionStateIfNeeded();
   loadSearchCache();
 };
