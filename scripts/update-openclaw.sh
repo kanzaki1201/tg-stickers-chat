@@ -83,6 +83,18 @@ need_eq('channels.telegram.actions.sticker', True)
 need_nonempty('env.vars.DEEPSEEK_API_KEY')
 need_nonempty('env.vars.OPENAI_API_KEY')
 
+need_eq('models.providers.deepseek.baseUrl', 'https://api.deepseek.com')
+
+flash_ids = [m.get('id') for m in models if isinstance(m, dict)]
+for want in ['deepseek-v4-flash', 'deepseek-v4-pro']:
+    if want not in flash_ids:
+        fails.append(f'  FAIL: models.providers.deepseek.models missing entry {want}')
+
+need_eq('plugins.entries.deepseek.enabled', True)
+need_eq('plugins.entries.openai.enabled', True)
+
+need_nonempty('memory.search.remote.apiKey')
+
 if fails:
     for f in fails:
         print(f)
