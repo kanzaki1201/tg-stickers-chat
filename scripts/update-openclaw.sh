@@ -62,6 +62,9 @@ need_in_list('agents.defaults.modelPolicy.allow', 'openai/*')
 
 need_eq('agents.defaults.heartbeat.model', 'deepseek/deepseek-v4-pro')
 
+need_eq('agents.defaults.compaction.model', 'deepseek/deepseek-v4-pro')
+need_eq('agents.defaults.compaction.notifyUser', True)
+
 found_vision = False
 models = get('models.providers.deepseek.models') or []
 for m in models:
@@ -89,6 +92,10 @@ flash_ids = [m.get('id') for m in models if isinstance(m, dict)]
 for want in ['deepseek-v4-flash', 'deepseek-v4-pro']:
     if want not in flash_ids:
         fails.append(f'  FAIL: models.providers.deepseek.models missing entry {want}')
+    else:
+        entry = next(m for m in models if isinstance(m, dict) and m.get('id') == want)
+        if entry.get('contextTokens') != 100000:
+            fails.append(f'  FAIL: {want} contextTokens == {json.dumps(entry.get(\"contextTokens\"))}, expected 100000')
 
 need_eq('plugins.entries.deepseek.enabled', True)
 need_eq('plugins.entries.openai.enabled', True)
