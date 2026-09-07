@@ -75,6 +75,8 @@ for m in models:
         inp = m.get('input', [])
         if 'image' not in inp:
             fails.append(f'  FAIL: vision model input missing \"image\"')
+        if m.get('reasoning') != True:
+            fails.append(f'  FAIL: vision model reasoning == {json.dumps(m.get(\"reasoning\"))}, expected true')
         thinking_type = (m.get('params') or {}).get('thinking', {}).get('type')
         if thinking_type != 'disabled':
             fails.append(f'  FAIL: vision model params.thinking.type == {json.dumps(thinking_type)}, expected \"disabled\"')
@@ -96,6 +98,12 @@ for want in ['deepseek-v4-flash', 'deepseek-v4-pro']:
         entry = next(m for m in models if isinstance(m, dict) and m.get('id') == want)
         if entry.get('contextTokens') != 100000:
             fails.append(f'  FAIL: {want} contextTokens == {json.dumps(entry.get(\"contextTokens\"))}, expected 100000')
+        if entry.get('reasoning') != True:
+            fails.append(f'  FAIL: {want} reasoning == {json.dumps(entry.get(\"reasoning\"))}, expected true')
+        if entry.get('contextWindow') != 1000000:
+            fails.append(f'  FAIL: {want} contextWindow == {json.dumps(entry.get(\"contextWindow\"))}, expected 1000000')
+        if entry.get('maxTokens') != 384000:
+            fails.append(f'  FAIL: {want} maxTokens == {json.dumps(entry.get(\"maxTokens\"))}, expected 384000')
 
 need_eq('plugins.entries.deepseek.enabled', True)
 need_eq('plugins.entries.openai.enabled', True)
