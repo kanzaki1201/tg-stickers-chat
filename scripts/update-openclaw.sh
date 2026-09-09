@@ -64,6 +64,7 @@ need_eq('agents.defaults.heartbeat.model', 'deepseek/deepseek-v4-pro')
 
 need_eq('agents.defaults.compaction.model', 'deepseek/deepseek-v4-pro')
 need_eq('agents.defaults.compaction.notifyUser', True)
+need_eq('agents.defaults.compaction.midTurnPrecheck.enabled', True)
 
 found_vision = False
 models = get('models.providers.deepseek.models') or []
@@ -96,8 +97,8 @@ for want in ['deepseek-v4-flash', 'deepseek-v4-pro']:
         fails.append(f'  FAIL: models.providers.deepseek.models missing entry {want}')
     else:
         entry = next(m for m in models if isinstance(m, dict) and m.get('id') == want)
-        if entry.get('contextTokens') != 100000:
-            fails.append(f'  FAIL: {want} contextTokens == {json.dumps(entry.get(\"contextTokens\"))}, expected 100000')
+        if entry.get('contextTokens') != 150000:
+            fails.append(f'  FAIL: {want} contextTokens == {json.dumps(entry.get(\"contextTokens\"))}, expected 150000')
         if entry.get('reasoning') != True:
             fails.append(f'  FAIL: {want} reasoning == {json.dumps(entry.get(\"reasoning\"))}, expected true')
         if entry.get('contextWindow') != 1000000:
