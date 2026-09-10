@@ -965,7 +965,7 @@ module.exports = function registerTelegramStickersBrain(api) {
     return vector;
   }
 
-  const VISION_MODEL = 'deepseek-v4-flash-vision-exp';
+  const VISION_MODEL = 'deepseek-flash';
   const VISION_PROMPT_FILE = '/home/k/.openclaw/sticker-describe-prompt.txt';
   const VISION_PROMPT_FALLBACK = [
     'Describe this chat sticker for a semantic search index that picks reply stickers.',

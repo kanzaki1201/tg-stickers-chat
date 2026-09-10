@@ -60,29 +60,31 @@ need_eq('plugins.entries.tg-stickers-chat.hooks.allowPromptInjection', True)
 need_in_list('agents.defaults.modelPolicy.allow', 'deepseek/*')
 need_in_list('agents.defaults.modelPolicy.allow', 'openai/*')
 
-need_eq('agents.defaults.heartbeat.model', 'deepseek/deepseek-v4-pro')
+need_eq('agents.defaults.heartbeat.model', 'deepseek/deepseek-flash')
 
-need_eq('agents.defaults.compaction.model', 'deepseek/deepseek-v4-pro')
+need_eq('agents.defaults.compaction.model', 'deepseek/deepseek-flash')
 need_eq('agents.defaults.compaction.notifyUser', True)
 need_eq('agents.defaults.compaction.midTurnPrecheck.enabled', True)
 
-found_vision = False
 models = get('models.providers.deepseek.models') or []
-for m in models:
-    if isinstance(m, dict) and m.get('id') == 'deepseek-v4-flash-vision-exp':
-        found_vision = True
-        if m.get('api') != 'openai-completions':
-            fails.append(f'  FAIL: vision model api == {json.dumps(m.get(\"api\"))}, expected \"openai-completions\"')
-        inp = m.get('input', [])
-        if 'image' not in inp:
-            fails.append(f'  FAIL: vision model input missing \"image\"')
-        if m.get('reasoning') != True:
-            fails.append(f'  FAIL: vision model reasoning == {json.dumps(m.get(\"reasoning\"))}, expected true')
-        thinking_type = (m.get('params') or {}).get('thinking', {}).get('type')
-        if thinking_type != 'disabled':
-            fails.append(f'  FAIL: vision model params.thinking.type == {json.dumps(thinking_type)}, expected \"disabled\"')
-if not found_vision:
-    fails.append('  FAIL: models.providers.deepseek.models missing entry deepseek-v4-flash-vision-exp')
+flash_ids = [m.get('id') for m in models if isinstance(m, dict)]
+if 'deepseek-flash' not in flash_ids:
+    fails.append('  FAIL: models.providers.deepseek.models missing entry deepseek-flash')
+else:
+    entry = next(m for m in models if isinstance(m, dict) and m.get('id') == 'deepseek-flash')
+    if entry.get('api') != 'openai-completions':
+        fails.append(f'  FAIL: deepseek-flash api == {json.dumps(entry.get(\"api\"))}, expected \"openai-completions\"')
+    inp = entry.get('input', [])
+    if 'text' not in inp or 'image' not in inp:
+        fails.append(f'  FAIL: deepseek-flash input must contain text and image, got {json.dumps(inp)}')
+    if entry.get('contextTokens') != 150000:
+        fails.append(f'  FAIL: deepseek-flash contextTokens == {json.dumps(entry.get(\"contextTokens\"))}, expected 150000')
+    if entry.get('reasoning') != True:
+        fails.append(f'  FAIL: deepseek-flash reasoning == {json.dumps(entry.get(\"reasoning\"))}, expected true')
+    if entry.get('contextWindow') != 1000000:
+        fails.append(f'  FAIL: deepseek-flash contextWindow == {json.dumps(entry.get(\"contextWindow\"))}, expected 1000000')
+    if entry.get('maxTokens') != 384000:
+        fails.append(f'  FAIL: deepseek-flash maxTokens == {json.dumps(entry.get(\"maxTokens\"))}, expected 384000')
 
 need_eq('channels.telegram.actions.sticker', True)
 
@@ -90,21 +92,6 @@ need_nonempty('env.vars.DEEPSEEK_API_KEY')
 need_nonempty('env.vars.OPENAI_API_KEY')
 
 need_eq('models.providers.deepseek.baseUrl', 'https://api.deepseek.com')
-
-flash_ids = [m.get('id') for m in models if isinstance(m, dict)]
-for want in ['deepseek-v4-flash', 'deepseek-v4-pro']:
-    if want not in flash_ids:
-        fails.append(f'  FAIL: models.providers.deepseek.models missing entry {want}')
-    else:
-        entry = next(m for m in models if isinstance(m, dict) and m.get('id') == want)
-        if entry.get('contextTokens') != 150000:
-            fails.append(f'  FAIL: {want} contextTokens == {json.dumps(entry.get(\"contextTokens\"))}, expected 150000')
-        if entry.get('reasoning') != True:
-            fails.append(f'  FAIL: {want} reasoning == {json.dumps(entry.get(\"reasoning\"))}, expected true')
-        if entry.get('contextWindow') != 1000000:
-            fails.append(f'  FAIL: {want} contextWindow == {json.dumps(entry.get(\"contextWindow\"))}, expected 1000000')
-        if entry.get('maxTokens') != 384000:
-            fails.append(f'  FAIL: {want} maxTokens == {json.dumps(entry.get(\"maxTokens\"))}, expected 384000')
 
 need_eq('plugins.entries.deepseek.enabled', True)
 need_eq('plugins.entries.openai.enabled', True)
